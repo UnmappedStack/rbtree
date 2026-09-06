@@ -28,6 +28,7 @@ typedef struct {
 
 // check whether a key would belong to the right or left of a node
 Direction check_node_direction(Node *node, uint64_t key) {
+    assert(node);
     if (key > node->val)
         return RIGHT;
     else if (key < node->val)
@@ -83,6 +84,12 @@ Node *rbtree_search(Tree *tree, uint64_t key) {
     }
 
     Node *node = tree->root;
+
+    if (!node) {
+        printf("empty tree\n");
+        return 0;
+    }
+
     for (;;) {
         Direction direction = check_node_direction(node, key);
         switch (direction) {
@@ -104,9 +111,11 @@ Node *rbtree_search(Tree *tree, uint64_t key) {
 // of what it wouldve been. also instead of a node to start searching from it takes a Tree*
 Node *rbtree_search_err(Tree *tree, uint64_t key) {
     Node *ret = rbtree_search(tree, key);
-    
+
+    if (!ret) goto noexist;
     Direction dir = check_node_direction(ret, key);
     if (dir != THIS) {
+noexist:
         printf("couldn't find key %zu\n", key);
         return NULL;
     }
@@ -231,16 +240,160 @@ int rbtree_insert_balanced(Tree *tree, uint64_t key) {
     return 0;
 }
 
+// balanced removal of a specific node from a tree where the node is black, non-root, and a leaf
+// this one is also pretty wikipedia-esque so credit is as above.
+int rbtree_remove_node_complex(Tree *tree, Node *node) {
+    assert(node && tree);
+    Node *sibling, *close_nephew, *far_nephew;
+    Node *parent = POINTER_FROM_COLOURED_POINTER(node->parent_and_colour);
+    assert(parent);
+    Direction dir = DIR_OF_CHILD_IN_PARENT(node);
+
+    parent->children[dir] = NULL;
+    goto start_balance;
+    do {
+        dir = DIR_OF_CHILD_IN_PARENT(node);
+start_balance:
+        sibling = parent->children[FLIP_DIR(dir)];
+        if (!sibling) return 0;
+        far_nephew = sibling->children[FLIP_DIR(dir)];
+        close_nephew = sibling->children[dir];
+        if (TAG_FROM_COLOURED_POINTER(sibling->parent_and_colour) == RED) {
+            rbtree_rotate(tree, parent, dir);
+            COLOURED_POINTER_SET_TAG(parent->parent_and_colour, RED);
+            COLOURED_POINTER_SET_TAG(sibling->parent_and_colour, BLACK);
+            sibling = close_nephew;
+
+            far_nephew = sibling->children[FLIP_DIR(dir)];
+            if (far_nephew &&
+                    TAG_FROM_COLOURED_POINTER(far_nephew->parent_and_colour) == RED) {
+                goto case6;
+            }
+
+            close_nephew = sibling->children[dir];
+            if (close_nephew &&
+                    TAG_FROM_COLOURED_POINTER(close_nephew->parent_and_colour) == RED) {
+                goto case5;
+            }
+
+            COLOURED_POINTER_SET_TAG(sibling->parent_and_colour, RED);
+            COLOURED_POINTER_SET_TAG(parent->parent_and_colour, BLACK);
+            return 0;
+        }
+
+        if (far_nephew &&
+                TAG_FROM_COLOURED_POINTER(far_nephew->parent_and_colour) == RED) {
+            goto case6;
+        }
+
+        if (close_nephew &&
+                TAG_FROM_COLOURED_POINTER(close_nephew->parent_and_colour) == RED) {
+            goto case5;
+        }
+
+        if (TAG_FROM_COLOURED_POINTER(parent->parent_and_colour) == RED) {
+            COLOURED_POINTER_SET_TAG(sibling->parent_and_colour, RED);
+            COLOURED_POINTER_SET_TAG(parent->parent_and_colour, BLACK);
+            return 0;
+        }
+
+        COLOURED_POINTER_SET_TAG(sibling->parent_and_colour, RED);
+        node = parent;
+    } while ((parent = POINTER_FROM_COLOURED_POINTER(node->parent_and_colour)));
+    return 0;
+
+case5:
+    rbtree_rotate(tree, sibling, FLIP_DIR(dir));
+    COLOURED_POINTER_SET_TAG(sibling->parent_and_colour, RED);
+    COLOURED_POINTER_SET_TAG(close_nephew->parent_and_colour, BLACK);
+    far_nephew = sibling;
+    sibling = close_nephew;
+
+case6:
+    rbtree_rotate(tree, parent, dir);
+    COLOURED_POINTER_SET_TAG(sibling->parent_and_colour,
+            TAG_FROM_COLOURED_POINTER(parent->parent_and_colour)
+        );
+    COLOURED_POINTER_SET_TAG(parent->parent_and_colour, BLACK);
+    COLOURED_POINTER_SET_TAG(far_nephew->parent_and_colour, BLACK);
+
+    return 0;
+}
+
+#define SWAP(Type, x, y) do { \
+        Type temp = x; \
+        x = y; \
+        y = temp; \
+    } while(0)
+
+// for simpler cases of removal. returns -1 on error and 0 on success.
+// TODO: memory leak, actually free children
+int rbtree_remove_node(Tree *tree, Node *node) {
+    assert(tree && node);
+
+    if (node->children[LEFT] && node->children[RIGHT]) {
+        /* the successor will be found by taking the right child of the node
+         * then going down left until it hits the leaf */
+        Node *successor = node->children[RIGHT];
+        while (successor->children[LEFT])
+            successor = successor->children[LEFT];
+
+        SWAP(uint64_t, node->val, successor->val);
+
+        assert(successor != node);
+        rbtree_remove_node(tree, successor);
+        return 0;
+    } else if (node->children[LEFT] || node->children[RIGHT]) {
+        // only one child
+        Direction child_dir = node->children[LEFT] ? LEFT : RIGHT;
+        Node *child = node->children[child_dir];
+
+        node->val = child->val;
+        COLOURED_POINTER_SET_TAG(node->parent_and_colour, BLACK);
+       
+        node->children[child_dir] = NULL;
+        return 0;
+    } else if (!POINTER_FROM_COLOURED_POINTER(node->parent_and_colour)) {
+        // this node is the root value and has no children, just get rid of it
+        tree->root = NULL;
+        return 0;
+    } else if (TAG_FROM_COLOURED_POINTER(node->parent_and_colour) == RED) {
+        // no children, not root, and is red, can just remove it
+        Node *parent = POINTER_FROM_COLOURED_POINTER(node->parent_and_colour);
+        Direction dir = DIR_OF_CHILD_IN_PARENT(node);
+
+        parent->children[dir] = NULL;
+        return 0;
+    } else {
+        // only case left is a black leaf non-root node, which is the complex case
+        return rbtree_remove_node_complex(tree, node);
+    }
+
+    fprintf(stderr, "unexpected removal type\n");
+    return -1;
+}
+
+int rbtree_remove(Tree *tree, uint64_t key) {
+    Node *node = rbtree_search_err(tree, key);
+    if (!node) {
+        fprintf(stderr, "key %zu cannot be existed because it does not exist\n", key);
+        return -1;
+    }
+    return rbtree_remove_node(tree, node);
+}
+
 #define DO_BALANCE true
 #define INSERT(rbtree, key) (DO_BALANCE ? rbtree_insert_balanced(rbtree, key) : rbtree_insert(rbtree, key, NULL, NULL))
 
-#define NUM_NUMS 1000000
+#define NUM_NUMS 10
 int main(void) {
     Tree rbtree = {0};
 
     // insert some numbers
     for (size_t i = 0; i < NUM_NUMS; i++) {
         INSERT(&rbtree, i);
+        if (i < 5) continue;
+        rbtree_remove(&rbtree, i);
     }
 
     // try find them
