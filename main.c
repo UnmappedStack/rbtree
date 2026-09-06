@@ -17,8 +17,6 @@ typedef enum {
 
 typedef struct Node Node;
 struct Node {
-//    Colour colour; /* this should later probably be stored within parent or
-//                    * val in some aligned bits */
     Node *parent_and_colour;
     uint64_t val;
     Node *children[2];
@@ -76,23 +74,27 @@ Node *rbtree_rotate(Tree *tree, Node *node, Direction dir) {
     return new_root;
 }
 
-// TODO, maybe make this not be recursive. if it doesnt exist then it should
+// if it doesnt exist then it should
 // return the parent of what the node would be.
-Node *rbtree_search(Node *root, uint64_t key) {
-    if (!root) {
+Node *rbtree_search(Tree *tree, uint64_t key) {
+    if (!tree) {
         fprintf(stderr, "got nullptr for tree in rbtree_search\n");
         return NULL;
     }
-    Direction direction = check_node_direction(root, key);
-    switch (direction) {
-    case RIGHT:
-    case LEFT:
-        if (root->children[direction] == NULL)
-            return root; // if it doesnt exist return parent
-        return rbtree_search(root->children[direction], key);
-    case THIS:
-//        printf("Found node of key %zu\n", key);
-        return root;
+
+    Node *node = tree->root;
+    for (;;) {
+        Direction direction = check_node_direction(node, key);
+        switch (direction) {
+        case RIGHT:
+        case LEFT:
+            if (node->children[direction] == NULL)
+                return node; // if it doesnt exist return parent
+            node = node->children[direction];
+            continue;
+        case THIS:
+            return node;
+        }
     }
     fprintf(stderr, "unreachable\n");
     return NULL;
@@ -101,7 +103,7 @@ Node *rbtree_search(Node *root, uint64_t key) {
 // like rbtree_search, but if it doesn't exist then it will return NULL instead of the parent
 // of what it wouldve been. also instead of a node to start searching from it takes a Tree*
 Node *rbtree_search_err(Tree *tree, uint64_t key) {
-    Node *ret = rbtree_search(tree->root, key);
+    Node *ret = rbtree_search(tree, key);
     
     Direction dir = check_node_direction(ret, key);
     if (dir != THIS) {
@@ -143,7 +145,7 @@ int rbtree_insert(Tree *tree, uint64_t key, Node **parent_buf, Node **inserted_n
         return rbtree_insert_first_node(tree, key, inserted_node_buf);
     }
 
-    Node *parent = rbtree_search(tree->root, key);
+    Node *parent = rbtree_search(tree, key);
 
     Direction direction = check_node_direction(parent, key);
     if (direction == THIS) {
@@ -229,7 +231,7 @@ int rbtree_insert_balanced(Tree *tree, uint64_t key) {
     return 0;
 }
 
-#define DO_BALANCE false
+#define DO_BALANCE true
 #define INSERT(rbtree, key) (DO_BALANCE ? rbtree_insert_balanced(rbtree, key) : rbtree_insert(rbtree, key, NULL, NULL))
 
 #define NUM_NUMS 1000000
