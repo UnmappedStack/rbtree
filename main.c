@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <time.h>
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
@@ -16,9 +17,9 @@ typedef enum {
 
 typedef struct Node Node;
 struct Node {
-    Colour colour; /* this should later probably be stored within parent or
-                    * val in some aligned bits */
-    Node *parent;
+//    Colour colour; /* this should later probably be stored within parent or
+//                    * val in some aligned bits */
+    Node *parent_and_colour;
     uint64_t val;
     Node *children[2];
 };
@@ -38,6 +39,14 @@ Direction check_node_direction(Node *node, uint64_t key) {
 
 #define FLIP_DIR(dir) (assert(dir != THIS), (dir == RIGHT) ? LEFT : RIGHT)
 
+// these assume the pointer of the coloured pointer is of type Node*
+#define IS_BYTE_ALIGNED(x) (!((size_t)x & 0b1))
+#define MK_COLOURED_POINTER(parent, tag) (assert(IS_BYTE_ALIGNED(parent)), ((size_t)parent | (uint8_t)tag))
+#define POINTER_FROM_COLOURED_POINTER(x) ((Node*)((size_t)x & ~1))
+#define TAG_FROM_COLOURED_POINTER(x) ((size_t)x & 1)
+#define COLOURED_POINTER_SET_TAG(cptr, tag) (cptr = (Node*)(((size_t)cptr & ~1) | (uint8_t)tag))
+#define COLOURED_POINTER_SET_PTR(cptr, ptr) (assert(IS_BYTE_ALIGNED(ptr)), cptr = (Node*)(((size_t)cptr & 1) | (size_t)ptr))
+
 /* rotates from a specific node and returns the new root node which takes the place of
  * the previous *node in the tree.
  * I tried to do it myself but I was looking at the wikipedia samples as I was
@@ -47,17 +56,17 @@ Direction check_node_direction(Node *node, uint64_t key) {
 Node *rbtree_rotate(Tree *tree, Node *node, Direction dir) {
     assert(dir != THIS && "invalid direction for rbtree_rotate");
 
-    Node *parent    = node->parent;
+    Node *parent    = POINTER_FROM_COLOURED_POINTER(node->parent_and_colour);
     Node *new_root  = node->children[FLIP_DIR(dir)];
     Node *new_child = new_root->children[dir];
 
     node->children[FLIP_DIR(dir)] = new_child;
     
-    if (new_child) new_child->parent = node;
+    if (new_child) COLOURED_POINTER_SET_PTR(new_child->parent_and_colour, node);
     
     new_root->children[dir] = node;
-    new_root->parent = parent;
-    node->parent = new_root;
+    COLOURED_POINTER_SET_PTR(new_root->parent_and_colour, parent);
+    COLOURED_POINTER_SET_PTR(node->parent_and_colour, new_root);
 
     if (parent) {
         Direction new_dir = (node == parent->children[RIGHT]) ? RIGHT : LEFT;
@@ -82,7 +91,7 @@ Node *rbtree_search(Node *root, uint64_t key) {
             return root; // if it doesnt exist return parent
         return rbtree_search(root->children[direction], key);
     case THIS:
-        printf("Found node of key %zu\n", key);
+//        printf("Found node of key %zu\n", key);
         return root;
     }
     fprintf(stderr, "unreachable\n");
@@ -114,9 +123,8 @@ static inline const char *strdir(Direction dir) {
 
 int rbtree_insert_first_node(Tree *tree, uint64_t key, Node **inserted_node_buf) {
     Node *node = (Node*) malloc(sizeof(Node));
-    node->parent = NULL;
     node->val    = key;
-    node->colour = BLACK;
+    node->parent_and_colour = (Node*)MK_COLOURED_POINTER(NULL, BLACK);
     memset(node->children, 0, sizeof(node->children));
 
     if (inserted_node_buf) *inserted_node_buf = node;
@@ -129,9 +137,9 @@ int rbtree_insert_first_node(Tree *tree, uint64_t key, Node **inserted_node_buf)
 // both *_buf args can be NULL if you don't care about them, otherwise they
 // will point to the parent of the inserted node and the inserted node.
 int rbtree_insert(Tree *tree, uint64_t key, Node **parent_buf, Node **inserted_node_buf) {
-    printf("Try insert key %zu...\n", key);
+//    printf("Try insert key %zu...\n", key);
     if (!tree->root) {
-        *parent_buf = NULL;
+        if (parent_buf) *parent_buf = NULL;
         return rbtree_insert_first_node(tree, key, inserted_node_buf);
     }
 
@@ -144,9 +152,8 @@ int rbtree_insert(Tree *tree, uint64_t key, Node **parent_buf, Node **inserted_n
     }
 
     Node *node = (Node*) malloc(sizeof(Node));
-    node->parent = parent;
     node->val    = key;
-    node->colour = RED;
+    node->parent_and_colour = (Node*)MK_COLOURED_POINTER(parent, RED);
     memset(node->children, 0, sizeof(node->children));
 
     if (parent_buf) *parent_buf = parent;
@@ -157,31 +164,27 @@ int rbtree_insert(Tree *tree, uint64_t key, Node **parent_buf, Node **inserted_n
 }
 
 // this is a chonky macro name but idc its descriptive. 
-#define DIR_OF_CHILD_IN_PARENT(node) (((node)->parent->children[RIGHT] == (node)) ? RIGHT : LEFT)
+#define DIR_OF_CHILD_IN_PARENT(node) (((POINTER_FROM_COLOURED_POINTER((node)->parent_and_colour))->children[RIGHT] == (node)) ? RIGHT : LEFT)
 // assumes node was just inserted and is still RED as it has not been modified.
 // this is also pretty damn based on the wikipedia one so credit is as given in
 // the link above.
 void rbtree_rebalance(Tree *tree, Node *parent, Node *node) {
     do {
         // no need to rebalance, as it is black->red, not red->red
-        if (parent->colour == BLACK) return;
+        if (TAG_FROM_COLOURED_POINTER(parent->parent_and_colour) == BLACK) return;
 
-        Node *grandparent = parent->parent;
+        Node *grandparent = POINTER_FROM_COLOURED_POINTER(parent->parent_and_colour);
         if (!grandparent) {
             /* if the parent is the root node, we can really easily fix the
              * red->red issue by just making the parent black, then we can be
              * sure it won't cause issues further up the tree. */
-            parent->colour = BLACK;
+            COLOURED_POINTER_SET_TAG(parent->parent_and_colour, BLACK);
             return;
         }
 
         Direction dir = DIR_OF_CHILD_IN_PARENT(parent);
-        assert(parent->parent->children[dir] == parent);
-        assert(dir != THIS);
-        assert(node->parent->children[RIGHT] != node->parent->children[LEFT]);
-
         Node *uncle = grandparent->children[FLIP_DIR(dir)];
-        if (!uncle || uncle->colour == BLACK) {
+        if (!uncle || TAG_FROM_COLOURED_POINTER(uncle->parent_and_colour) == BLACK) {
             if (node == parent->children[FLIP_DIR(dir)]) {
                 // parent is red but the uncle, its sibling, is black. we want
                 // to rotate so that the parent becomes the grandparent
@@ -194,19 +197,21 @@ void rbtree_rebalance(Tree *tree, Node *parent, Node *node) {
             // so that the parent replaces the grandparent, parent becomes the parent
             // of both the node and the grandparent.
             rbtree_rotate(tree, grandparent, FLIP_DIR(dir));
-            parent->colour = BLACK;
-            grandparent->colour = RED;
+            COLOURED_POINTER_SET_TAG(parent->parent_and_colour, BLACK);
+            COLOURED_POINTER_SET_TAG(grandparent->parent_and_colour, RED);
             return;
         }
 
         // parent and uncle are both red, they can become black while the
         // grandparent (their parent) becomes red, to ensure that the number of
         // black nodes from any node to its leaf nodes are the same.
-        assert(uncle->parent == grandparent && parent->parent == grandparent);
-        parent->colour = uncle->colour = BLACK;
-        grandparent->colour = RED;
+        assert(POINTER_FROM_COLOURED_POINTER(uncle->parent_and_colour) == grandparent &&
+                POINTER_FROM_COLOURED_POINTER(parent->parent_and_colour) == grandparent);
+        COLOURED_POINTER_SET_TAG(parent->parent_and_colour, BLACK);
+        COLOURED_POINTER_SET_TAG(uncle->parent_and_colour, BLACK);
+        COLOURED_POINTER_SET_TAG(grandparent->parent_and_colour, RED);
         node = grandparent;
-    } while((parent = node->parent));
+    } while((parent = POINTER_FROM_COLOURED_POINTER(node->parent_and_colour)));
 }
 
 // ret 0 on success, -1 on error. inserts then ensures the tree is balanced.
@@ -224,25 +229,22 @@ int rbtree_insert_balanced(Tree *tree, uint64_t key) {
     return 0;
 }
 
-#define DO_BALANCE true
+#define DO_BALANCE false
 #define INSERT(rbtree, key) (DO_BALANCE ? rbtree_insert_balanced(rbtree, key) : rbtree_insert(rbtree, key, NULL, NULL))
+
+#define NUM_NUMS 1000000
 int main(void) {
     Tree rbtree = {0};
 
-    printf(" === Insertions test ===\n");
-    if (INSERT(&rbtree, 69) < 0) return -1;
-    if (INSERT(&rbtree, 12) < 0) return -1;
-    if (INSERT(&rbtree, 14) < 0) return -1;
-    if (INSERT(&rbtree, 72) < 0) return -1;
-    if (INSERT(&rbtree, 18) < 0) return -1;
+    // insert some numbers
+    for (size_t i = 0; i < NUM_NUMS; i++) {
+        INSERT(&rbtree, i);
+    }
 
-    printf("\n === Searches test ===\n");
-    rbtree_search_err(&rbtree, 69);
-    rbtree_search_err(&rbtree, 14);
-    rbtree_search_err(&rbtree, 72);
-    rbtree_search_err(&rbtree, 18);
-    rbtree_search_err(&rbtree, 12);
-    rbtree_search_err(&rbtree, 95); // doesnt exist
+    // try find them
+    for (size_t i = 0; i < NUM_NUMS; i++) {
+        rbtree_search_err(&rbtree, i);
+    }
 
     return 0;
 }
